@@ -235,7 +235,9 @@ def generate(
         ToolCall(
             id=tool_call.id,
             name=tool_call.function.name,
-            arguments=json.loads(tool_call.function.arguments),
+            arguments=json.loads(tool_call.function.arguments)
+            if tool_call.function.arguments
+            else {},
         )
         for tool_call in tool_calls
     ]

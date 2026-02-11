@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = "MIT"
 authors = [
     { name = "Victor Barres", email = "victor.barres@gmail.com" },
-    { name = "Honghua Dong", email = "dhh19951@gmail.com" }
+    { name = "Honghua Dong", email = "dhh19951@gmail.com" },
 ]
 dependencies = [
     "fs",
@@ -29,7 +29,7 @@ dependencies = [
     "psutil>=7.0.0",
     "loguru>=0.7.3",
     "docstring-parser>=0.16",
-    "litellm>=1.65.0",
+    "litellm>=1.81.9",
     "tenacity>=9.0.0",
     "matplotlib>=3.10.1",
     "seaborn>=0.13.2",
