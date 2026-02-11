@@ -8,6 +8,7 @@ from typing import Optional
 from loguru import logger
 
 from tau2.agent.llm_agent import LLMAgent, LLMGTAgent, LLMSoloAgent
+from tau2.agent.llm_pctx_agent import LLMPctxAgent
 from tau2.data_model.simulation import (
     AgentInfo,
     Info,
@@ -451,7 +452,15 @@ def run_task(
     AgentConstructor = registry.get_agent_constructor(agent)
 
     solo_mode = False
-    if issubclass(AgentConstructor, LLMAgent):
+    if issubclass(AgentConstructor, LLMPctxAgent):
+        ## must be first because LLMPctxAgent currently inherits from LLMAgent
+        agent = AgentConstructor(
+            env=environment,
+            llm=llm_agent,
+            llm_args=llm_args_agent,
+        )
+        agent.connect()
+    elif issubclass(AgentConstructor, LLMAgent):
         agent = AgentConstructor(
             tools=environment.get_tools(),
             domain_policy=environment.get_policy(),
@@ -482,6 +491,7 @@ def run_task(
             tools=environment.get_tools(),
             domain_policy=environment.get_policy(),
         )
+
     else:
         raise ValueError(
             f"Unknown agent type: {AgentConstructor}. Should be LLMAgent or LLMSoloAgent"
@@ -493,9 +503,9 @@ def run_task(
 
     UserConstructor = registry.get_user_constructor(user)
     if issubclass(UserConstructor, DummyUser):
-        assert isinstance(
-            agent, LLMSoloAgent
-        ), "Dummy user can only be used with solo agent"
+        assert isinstance(agent, LLMSoloAgent), (
+            "Dummy user can only be used with solo agent"
+        )
 
     user = UserConstructor(
         tools=user_tools,
@@ -517,6 +527,14 @@ def run_task(
         validate_communication=enforce_communication_protocol,
     )
     simulation = orchestrator.run()
+
+    if isinstance(agent, LLMPctxAgent):
+        agent.disconnect()
+
+        # TODO: we need to insert the pctx callbacks as "tool_calls"
+        # in the message history for eval, also given LLMPctxAgent
+        # is making more requests to the llm the agent cost needs to be updated as well
+        # perhaps this would be better to do within the orchestrator
 
     reward_info = evaluate_simulation(
         domain=domain,
