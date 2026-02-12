@@ -1,6 +1,9 @@
 import asyncio
 import functools
 import json
+import uuid
+from copy import deepcopy
+from datetime import datetime
 from typing import Callable, Coroutine
 
 from loguru import logger
@@ -11,12 +14,14 @@ from tau2.agent.base import ValidAgentInputMessage
 from tau2.agent.llm_agent import LLMAgent, LLMAgentState
 from tau2.data_model.message import (
     AssistantMessage,
+    Message,
     MultiToolMessage,
     ToolCall,
     ToolMessage,
 )
 from tau2.environment.environment import Environment
 from tau2.environment.tool import as_tool
+from tau2.utils.utils import get_now
 
 
 class LLMPctxAgent(LLMAgent):
@@ -26,12 +31,12 @@ class LLMPctxAgent(LLMAgent):
         llm: str | None = None,
         llm_args: dict | None = None,
     ):
-        self.tool_calls: list[ToolCall] = []
+        self.internal_messages: list[Message] = []
+        self.current_execute_callbacks: list[tuple[ToolCall, ToolMessage]] = []
         self.env = env
 
         # Create a persistent event loop for this agent instance
         self._loop = asyncio.new_event_loop()
-        logger.debug("[PCTX] Created persistent event loop for agent instance")
 
         # convert env tools to pctx tools for code-mode registration
         env_tools = list(env.tools.tools.values()) if env.tools else []
@@ -48,7 +53,6 @@ class LLMPctxAgent(LLMAgent):
     def __del__(self):
         """Clean up the persistent event loop when the agent is deleted."""
         if hasattr(self, "_loop") and not self._loop.is_closed():
-            logger.debug("[PCTX] Closing persistent event loop (agent deleted)")
             self._loop.close()
 
     def _track_pctx_tool(self, fn: Callable) -> Callable:
@@ -56,15 +60,36 @@ class LLMPctxAgent(LLMAgent):
         Returns wrapped callable tracing arguments as tool calls
         without altering the original type signature
         """
-        calls = self.tool_calls
-        tool_name = fn.__name__
 
         @functools.wraps(fn)
         def tracked(**kwargs):
-            result = fn(**kwargs)
-            calls.append(
-                ToolCall(id="pctx_tool_call", name=tool_name, arguments=kwargs)
+            tool_call_id = str(uuid.uuid4())
+            tool_call = ToolCall(id=tool_call_id, name=fn.__name__, arguments=kwargs)
+
+            logger.debug(f"[PCTX] Env Call - {tool_call.name}\n{tool_call.arguments}")
+
+            result = None
+            error = False
+            try:
+                result = fn(**kwargs)
+            except Exception as e:
+                result = f"Error: {e}"
+                error = True
+
+            content = self.env.to_json_str(result)
+
+            logger.debug(
+                f"[PCTX] Env Response - {tool_call.name} (error={error})\n{content}"
             )
+
+            tool_msg = ToolMessage(
+                id=tool_call_id,
+                role="tool",
+                content=content,
+                error=error,
+            )
+            self.current_execute_callbacks.append((tool_call, tool_msg))
+
             return result
 
         return tracked
@@ -72,14 +97,19 @@ class LLMPctxAgent(LLMAgent):
     def _handle_pctx_tool_call(self, tool_call: ToolCall) -> ToolMessage:
         error = False
         logger.debug(
-            f"[PCTX] - {tool_call.name}\n{tool_call.arguments.get('functions', tool_call.arguments.get('code', tool_call.arguments))}"
+            f"[PCTX] Call - {tool_call.name}\n{tool_call.arguments.get('functions', tool_call.arguments.get('code', tool_call.arguments))}"
         )
-
         try:
             resp = self.code_mode_fns[tool_call.name](**tool_call.arguments)
         except Exception as e:
             resp = f"Error: {e}"
             error = True
+
+        if tool_call.name == "pctx_execute":
+            logger.debug(f"[PCTX] Response - {tool_call.name} (error={error})\n{resp}")
+        else:
+            logger.debug(f"[PCTX] Response - {tool_call.name} (error={error})")
+
         return ToolMessage(
             id=tool_call.id,
             content=json.dumps(resp),
@@ -99,38 +129,36 @@ class LLMPctxAgent(LLMAgent):
     def _get_sync_code_mode_fns(self) -> dict[str, Callable]:
         """Get synchronous wrapper functions for pctx code mode tools."""
 
-        def list_functions() -> str:
+        def pctx_list_functions() -> str:
             return self._run_in_loop(self.pctx.list_functions()).code
 
-        list_functions.__doc__ = CODE_MODE_TOOL_DESCRIPTIONS["list_functions"]
+        pctx_list_functions.__doc__ = CODE_MODE_TOOL_DESCRIPTIONS["list_functions"]
 
-        def get_function_details(functions: list[str]) -> str:
+        def pctx_get_function_details(functions: list[str]) -> str:
             return self._run_in_loop(self.pctx.get_function_details(functions)).code
 
-        get_function_details.__doc__ = CODE_MODE_TOOL_DESCRIPTIONS[
+        pctx_get_function_details.__doc__ = CODE_MODE_TOOL_DESCRIPTIONS[
             "get_function_details"
         ]
 
-        def execute(code: str) -> str:
+        def pctx_execute(code: str) -> str:
             return self._run_in_loop(self.pctx.execute(code)).markdown()
 
-        execute.__doc__ = CODE_MODE_TOOL_DESCRIPTIONS["execute"]
+        pctx_execute.__doc__ = CODE_MODE_TOOL_DESCRIPTIONS["execute"]
 
         return {
-            "list_functions": list_functions,
-            "get_function_details": get_function_details,
-            "execute": execute,
+            "pctx_list_functions": pctx_list_functions,
+            "pctx_get_function_details": pctx_get_function_details,
+            "pctx_execute": pctx_execute,
         }
 
     def connect(self):
-        logger.debug("[PCTX] Connecting using persistent event loop")
         self._run_in_loop(self.pctx.connect())
         logger.debug(
             f"[PCTX] - connected to server: session_id={self.pctx._session_id}"
         )
 
     def disconnect(self):
-        logger.debug("[PCTX] Disconnecting from server")
         self._run_in_loop(self.pctx.disconnect())
         logger.debug(f"[PCTX] - disconnected from server")
 
@@ -146,9 +174,31 @@ class LLMPctxAgent(LLMAgent):
             logger.debug(
                 f"[PCTX] Tool call iteration {iteration}\n\ttool call(s): {len(msg.tool_calls)}\n\tmessage content: {msg.content}"
             )
+
+            expanded_assistant_msg = deepcopy(msg)
+            expanded_assistant_msg.tool_calls = []
+
             tool_msgs = []
-            for tool_call in msg.tool_calls:
-                tool_msgs.append(self._handle_pctx_tool_call(tool_call))
+            execute_tool_msgs = []
+            for pctx_tool_call in msg.tool_calls:
+                self.current_execute_callbacks.clear()
+
+                before_handle = get_now()
+                pctx_tool_msg = self._handle_pctx_tool_call(pctx_tool_call)
+                pctx_tool_msg.timestamp = before_handle
+                tool_msgs.append(pctx_tool_msg)
+
+                expanded_assistant_msg.tool_calls.append(pctx_tool_call)
+                expanded_assistant_msg.tool_calls.extend(
+                    map(lambda e: e[0], self.current_execute_callbacks)
+                )
+                execute_tool_msgs.extend(
+                    map(lambda e: e[1], self.current_execute_callbacks)
+                )
+
+            self.internal_messages.append(expanded_assistant_msg)
+            self.internal_messages.extend(tool_msgs)
+            self.internal_messages.extend(execute_tool_msgs)
 
             # Packaging multiple tool messages into a MultiToolMessage
             if len(tool_msgs) > 1:
@@ -169,7 +219,12 @@ class LLMPctxAgent(LLMAgent):
         logger.debug(
             f"[PCTX] Returning final message after {iteration} tool call iteration(s)"
         )
+        # final msg will automatically be added to the trajectory so we should avoid
+        # adding to self.internal_messages (double counting)
         return msg, state
+
+    def get_internal_messages(self) -> list[Message]:
+        return self.internal_messages
 
 
 CODE_MODE_TOOL_DESCRIPTIONS = {

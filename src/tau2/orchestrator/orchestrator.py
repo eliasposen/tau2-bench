@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Optional
 
+import rich
 from loguru import logger
 
 from tau2.agent.base import AgentError, BaseAgent, is_valid_agent_history_message
@@ -163,9 +164,9 @@ class Orchestrator:
                 isinstance(self.agent, LLMSoloAgent)
                 or self.agent.__class__.__name__ == "GymAgent"
             ), "Agent must be a LLMSoloAgent or GymAgent in solo mode"
-            assert isinstance(
-                self.user, DummyUser
-            ), "User must be a DummyUser in solo mode"
+            assert isinstance(self.user, DummyUser), (
+                "User must be a DummyUser in solo mode"
+            )
 
         # Initialize Environment state
         self._initialize_environment(
@@ -309,9 +310,7 @@ class Orchestrator:
                     self.to_role = Role.ENV
                     self.done = self.agent.is_stop(first_message)
                     if self.done:
-                        self.to_role = (
-                            Role.USER
-                        )  # FIXIT: For now, we assume last message cannot be to the environment
+                        self.to_role = Role.USER  # FIXIT: For now, we assume last message cannot be to the environment
                         self.termination_reason = TerminationReason.AGENT_STOP
         if self.validate_communication:
             self.check_communication_error()
@@ -425,6 +424,7 @@ class Orchestrator:
 
         # Wrap up the simulation
         duration = time.perf_counter() - start
+        self.trajectory.extend(self.agent.get_internal_messages())
         messages = self.get_trajectory()
         res = get_cost(messages)
         if res is None:
@@ -509,9 +509,9 @@ class Orchestrator:
                 if tool_msg.error:
                     self.num_errors += 1
                 tool_msgs.append(tool_msg)
-            assert len(self.message.tool_calls) == len(
-                tool_msgs
-            ), "Number of tool calls and tool messages should be the same"
+            assert len(self.message.tool_calls) == len(tool_msgs), (
+                "Number of tool calls and tool messages should be the same"
+            )
             self.trajectory.extend(tool_msgs)
             if (
                 len(tool_msgs) > 1

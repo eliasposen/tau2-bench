@@ -75,13 +75,6 @@ class EnvironmentEvaluator(EvaluatorBase):
             initialization_actions=initialization_actions,
             message_history=full_trajectory,
         )
-        predicted_tool_calls: list[ToolCall] = []
-        for message in full_trajectory:
-            if (
-                isinstance(message, AssistantMessage)
-                or isinstance(message, UserMessage)
-            ) and message.is_tool_call():
-                predicted_tool_calls.extend(message.tool_calls)
 
         # Setting up gold environment
         gold_environment = environment_constructor()

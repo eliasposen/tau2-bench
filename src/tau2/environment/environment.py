@@ -319,6 +319,8 @@ class Environment:
 
         action_responses = get_actions_from_messages(message_history)
         for tool_call, expected_response in action_responses:
+            if tool_call.name.startswith("pctx_"):
+                continue
             response = self.get_response(tool_call)
             try:
                 content = json.loads(response.content)

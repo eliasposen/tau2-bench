@@ -84,6 +84,16 @@ class BaseAgent(ABC, Generic[AgentState]):
         """
         raise NotImplementedError
 
+    def get_internal_messages(
+        self,
+    ) -> list[Message]:
+        """
+        Agents might store some components of the message history internally
+        this hook will be called before sorting & adding the message history
+        to simulation results
+        """
+        return []
+
     @classmethod
     def is_stop(cls, message: AssistantMessage) -> bool:
         """Check if the message is a stop message.

@@ -230,23 +230,31 @@ def generate(
         "The response should be an assistant message"
     )
     content = response.message.content
-    tool_calls = response.message.tool_calls or []
-    tool_calls = [
-        ToolCall(
-            id=tool_call.id,
-            name=tool_call.function.name,
-            arguments=json.loads(tool_call.function.arguments)
-            if tool_call.function.arguments
-            else {},
+
+    tool_calls = []
+
+    for tool_call in response.message.tool_calls or []:
+        arguments = {}
+        try:
+            arguments = (
+                json.loads(tool_call.function.arguments)
+                if tool_call.function.arguments
+                else {}
+            )
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Failed json decoding tool call arguments, falling back to {}"
+                f"\n\tError: {e}\n\targuments: {tool_call.function.arguments}"
+            )
+
+        tool_calls.append(
+            ToolCall(id=tool_call.id, name=tool_call.function.name, arguments=arguments)
         )
-        for tool_call in tool_calls
-    ]
-    tool_calls = tool_calls or None
 
     message = AssistantMessage(
         role="assistant",
         content=content,
-        tool_calls=tool_calls,
+        tool_calls=tool_calls or None,
         cost=cost,
         usage=usage,
         raw_data=response.to_dict(),
