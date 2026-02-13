@@ -191,9 +191,9 @@ class AirlineTools(ToolKitBase):  # Tools
         destination: str,
         flight_type: FlightType,
         cabin: CabinClass,
-        flights: List[FlightInfo | dict],
-        passengers: List[Passenger | dict],
-        payment_methods: List[Payment | dict],
+        flights: List[FlightInfo],
+        passengers: List[Passenger],
+        payment_methods: List[Payment],
         total_baggages: int,
         nonfree_baggages: int,
         insurance: Insurance,
@@ -593,7 +593,7 @@ class AirlineTools(ToolKitBase):  # Tools
         self,
         reservation_id: str,
         cabin: CabinClass,
-        flights: List[FlightInfo | dict],
+        flights: List[FlightInfo],
         payment_id: str,
     ) -> Reservation:
         """
@@ -691,7 +691,7 @@ class AirlineTools(ToolKitBase):  # Tools
 
     @is_tool(ToolType.WRITE)
     def update_reservation_passengers(
-        self, reservation_id: str, passengers: List[Passenger | dict]
+        self, reservation_id: str, passengers: List[Passenger]
     ) -> Reservation:
         """
         Update the passenger information of a reservation.
