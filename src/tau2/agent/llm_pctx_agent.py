@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import json
+import os
 import uuid
 from copy import deepcopy
 from datetime import datetime
@@ -9,9 +10,10 @@ from typing import Callable, Coroutine
 from loguru import logger
 from pctx_client import Pctx
 from pctx_client import tool as pctx_tool
+from pctx_client.tool_descriptions import PRESCRIPTIVE_DESCRIPTIONS
 
 from tau2.agent.base import ValidAgentInputMessage
-from tau2.agent.llm_agent import LLMAgent, LLMAgentState
+from tau2.agent.llm_agent import LLMAgent, LLMAgentState, AGENT_INSTRUCTION, SYSTEM_PROMPT
 from tau2.data_model.message import (
     AssistantMessage,
     Message,
@@ -22,6 +24,15 @@ from tau2.data_model.message import (
 from tau2.environment.environment import Environment
 from tau2.environment.tool import as_tool
 from tau2.utils.utils import get_now
+
+# fs mode addendum
+PCTX_FS_ADDENDUM = """
+
+Available functions in `{namespace}` namespace:
+{function_list}
+
+Use pctx_execute_typescript to call functions. Keep code simple - just call functions and return results.
+The environment handles all policy enforcement. Don't implement eligibility checks or calculations.""".strip()
 
 
 class LLMPctxAgent(LLMAgent):
@@ -34,6 +45,7 @@ class LLMPctxAgent(LLMAgent):
         self.internal_messages: list[Message] = []
         self.current_execute_callbacks: list[tuple[ToolCall, ToolMessage]] = []
         self.env = env
+        self.pctx_mode = os.environ.get("PCTX_MODE", "code").lower()
 
         # Create a persistent event loop for this agent instance
         self._loop = asyncio.new_event_loop()
@@ -49,6 +61,27 @@ class LLMPctxAgent(LLMAgent):
         tau_tools = [as_tool(t) for t in self.code_mode_fns.values()]
 
         super().__init__(tau_tools, env.get_policy(), llm, llm_args)
+
+    @property
+    def system_prompt(self) -> str:
+        """Override to add fs mode context."""
+        base_prompt = SYSTEM_PROMPT.format(
+            domain_policy=self.domain_policy,
+            agent_instruction=AGENT_INSTRUCTION
+        )
+
+        if self.pctx_mode == "fs":
+            # Generate function list from env tools
+            env_tools = list(self.env.tools.tools.values()) if self.env.tools else []
+            function_list = "\n".join([f"- {fn.__name__}" for fn in env_tools])
+
+            fs_context = PCTX_FS_ADDENDUM.format(
+                namespace=self.env.domain_name,
+                function_list=function_list
+            )
+            return base_prompt + "\n\n" + fs_context
+
+        return base_prompt
 
     def __del__(self):
         """Clean up the persistent event loop when the agent is deleted."""
@@ -127,30 +160,56 @@ class LLMPctxAgent(LLMAgent):
             asyncio.set_event_loop(None)
 
     def _get_sync_code_mode_fns(self) -> dict[str, Callable]:
-        """Get synchronous wrapper functions for pctx code mode tools."""
+        """Get synchronous wrapper functions for pctx tools.
 
-        def pctx_list_functions() -> str:
-            return self._run_in_loop(self.pctx.list_functions()).code
+        Mode is controlled by PCTX_MODE environment variable:
+        - "code" (default): Traditional discovery workflow (list_functions, get_function_details, execute)
+        - "fs": Filesystem exploration workflow (execute_bash, execute_typescript)
+        """
+        mode = os.environ.get("PCTX_MODE", "code").lower()
 
-        pctx_list_functions.__doc__ = CODE_MODE_TOOL_DESCRIPTIONS["list_functions"]
+        if mode == "fs":
+            # Filesystem mode: bash exploration + typescript execution
+            def pctx_execute_bash(command: str) -> str:
+                return self._run_in_loop(self.pctx.execute_bash(command)).markdown()
 
-        def pctx_get_function_details(functions: list[str]) -> str:
-            return self._run_in_loop(self.pctx.get_function_details(functions)).code
+            pctx_execute_bash.__doc__ = PRESCRIPTIVE_DESCRIPTIONS["execute_bash"]
 
-        pctx_get_function_details.__doc__ = CODE_MODE_TOOL_DESCRIPTIONS[
-            "get_function_details"
-        ]
+            def pctx_execute_typescript(code: str) -> str:
+                return self._run_in_loop(self.pctx.execute(code)).markdown()
 
-        def pctx_execute(code: str) -> str:
-            return self._run_in_loop(self.pctx.execute(code)).markdown()
+            pctx_execute_typescript.__doc__ = PRESCRIPTIVE_DESCRIPTIONS[
+                "execute_typescript"
+            ]
 
-        pctx_execute.__doc__ = CODE_MODE_TOOL_DESCRIPTIONS["execute"]
+            return {
+                "pctx_execute_bash": pctx_execute_bash,
+                "pctx_execute_typescript": pctx_execute_typescript,
+            }
+        else:
+            # Code mode (default): Traditional discovery workflow
+            def pctx_list_functions() -> str:
+                return self._run_in_loop(self.pctx.list_functions()).code
 
-        return {
-            "pctx_list_functions": pctx_list_functions,
-            "pctx_get_function_details": pctx_get_function_details,
-            "pctx_execute": pctx_execute,
-        }
+            pctx_list_functions.__doc__ = PRESCRIPTIVE_DESCRIPTIONS["list_functions"]
+
+            def pctx_get_function_details(functions: list[str]) -> str:
+                return self._run_in_loop(self.pctx.get_function_details(functions)).code
+
+            pctx_get_function_details.__doc__ = PRESCRIPTIVE_DESCRIPTIONS[
+                "get_function_details"
+            ]
+
+            def pctx_execute(code: str) -> str:
+                return self._run_in_loop(self.pctx.execute(code)).markdown()
+
+            pctx_execute.__doc__ = PRESCRIPTIVE_DESCRIPTIONS["execute"]
+
+            return {
+                "pctx_list_functions": pctx_list_functions,
+                "pctx_get_function_details": pctx_get_function_details,
+                "pctx_execute": pctx_execute,
+            }
 
     def connect(self):
         self._run_in_loop(self.pctx.connect())
@@ -225,83 +284,3 @@ class LLMPctxAgent(LLMAgent):
 
     def get_internal_messages(self) -> list[Message]:
         return self.internal_messages
-
-
-CODE_MODE_TOOL_DESCRIPTIONS = {
-    ##############
-    # list_functions
-    ##############
-    "list_functions": """ALWAYS USE THIS TOOL FIRST to list all available functions organized by namespace.
-
-WORKFLOW:
-1. Start here - Call this tool to see what functions are available
-2. Then call get_function_details() for specific functions you need to understand
-3. Finally call execute() to run your TypeScript code
-
-This returns function signatures without full details.""",
-    "search_functions": """ALWAYS USE THIS TOOL FIRST to find relevant functions.
-
-Arguments:
-  query: The search query string to find relevant functions.
-  k: The maximum number of top results to return (default: 10).
-
-
-WORKFLOW:
-1. Start here - Call this tool to find suitable functions
-2. Then call get_function_details() for specific functions you need to understand
-3. Finally call execute() to run your TypeScript code
-
-This returns a list of matching functions.""",
-    ##############
-    # get_function_details
-    ##############
-    "get_function_details": """Get detailed information about specific functions you want to use.
-
-WHEN TO USE: After calling list_functions(), use this to learn about parameter types, return values, and usage for specific functions.
-
-REQUIRED FORMAT: Functions must be specified as 'namespace.functionName' (e.g., 'Namespace.apiPostSearch')
-
-This tool is lightweight and only returns details for the functions you request, avoiding unnecessary token usage.
-Only request details for functions you actually plan to use in your code.
-
-NOTE ON RETURN TYPES:
-- If a function returns Promise<any>, the MCP server didn't provide an output schema
-- The actual value is a parsed object (not a string) - access properties directly
-- Don't use JSON.parse() on the results - they're already JavaScript objects""",
-    ##############
-    # execute
-    ##############
-    "execute": """Execute TypeScript code that calls namespaced functions. USE THIS LAST after list_functions() and get_function_details().
-
-TOKEN USAGE WARNING: This tool could return LARGE responses if your code returns big objects.
-To minimize tokens:
-- Filter/map/reduce data IN YOUR CODE before returning
-- Only return specific fields you need (e.g., return {id: result.id, count: items.length})
-- Use console.log() for intermediate results instead of returning everything
-- Avoid returning full API responses - extract just what you need
-
-REQUIRED CODE STRUCTURE:
-async function run() {
-    // Your code here
-    // Call namespace.functionName() - MUST include namespace prefix
-    // Process data here to minimize return size
-    return onlyWhatYouNeed; // Keep this small!
-}
-
-IMPORTANT RULES:
-- You MUST define a `run()` function
-- You MUST NOT call or export any functions from the root of the script, `run()` will be called automatically
-- ALWAYS batch multiple tool operations into ONE execute call.
-- Functions MUST be called as 'Namespace.functionName' (e.g., 'Notion.apiPostSearch')
-- Only functions from list_functions() are available - no fetch(), fs, or other Node/Deno APIs
-- Variables don't persist between execute() calls - return or log anything you need later
-- Add console.log() statements between API calls to track progress if errors occur
-- Code runs in an isolated Deno sandbox with restricted network access
-
-RETURN TYPE NOTE:
-- Functions without output schemas show Promise<any> as return type
-- The actual runtime value is already a parsed JavaScript object, NOT a JSON string
-- Do NOT call JSON.parse() on results - they're already objects
-- Access properties directly (e.g., result.data) or inspect with console.log() first
-- If you see 'Promise<any>', the structure is unknown - log it to see what's returned""",
-}
