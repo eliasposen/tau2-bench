@@ -4,7 +4,6 @@ import json
 import os
 import uuid
 from copy import deepcopy
-from datetime import datetime
 from typing import Callable, Coroutine
 
 from loguru import logger
@@ -13,12 +12,7 @@ from pctx_client import tool as pctx_tool
 from pctx_client.tool_descriptions import PRESCRIPTIVE_DESCRIPTIONS
 
 from tau2.agent.base import ValidAgentInputMessage
-from tau2.agent.llm_agent import (
-    LLMAgent,
-    LLMAgentState,
-    AGENT_INSTRUCTION,
-    SYSTEM_PROMPT,
-)
+from tau2.agent.llm_agent import LLMAgent, LLMAgentState, LLMSoloAgent
 from tau2.data_model.message import (
     AssistantMessage,
     Message,
@@ -26,6 +20,7 @@ from tau2.data_model.message import (
     ToolCall,
     ToolMessage,
 )
+from tau2.data_model.tasks import Task
 from tau2.environment.environment import Environment
 from tau2.environment.tool import as_tool
 from tau2.utils.utils import get_now
@@ -47,56 +42,53 @@ Write operations (cancel/book/update/send_certificate) execute database changes.
 Multi-step pattern: gather info → verify policy → execute action → communicate result.""".strip()
 
 
-class LLMPctxAgent(LLMAgent):
-    def __init__(
-        self,
-        env: Environment,
-        llm: str | None = None,
-        llm_args: dict | None = None,
-    ):
+class LLMPctxMixin:
+    """Mixin providing pctx code/fs execution capabilities to LLM agents.
+
+    Intended for use as a left-hand base alongside LLMAgent or LLMSoloAgent:
+
+        class LLMPctxAgent(LLMPctxMixin, LLMAgent): ...
+        class LLMPctxSoloAgent(LLMPctxMixin, LLMSoloAgent): ...
+
+    Concrete subclasses must call self._init_pctx(env) before super().__init__().
+    """
+
+    def _init_pctx(self, domain: str, tools: list[Callable] = None) -> list:
+        """Set up pctx state and return the tau_tools list to pass to super().__init__()."""
         self.internal_messages: list[Message] = []
         self.current_execute_callbacks: list[tuple[ToolCall, ToolMessage]] = []
-        self.env = env
+        self.domain = domain
         self.pctx_mode = os.environ.get("PCTX_MODE", "code").lower()
 
         # Create a persistent event loop for this agent instance
         self._loop = asyncio.new_event_loop()
 
         # convert env tools to pctx tools for code-mode registration
-        env_tools = list(env.tools.tools.values()) if env.tools else []
-        pctx_env_tools = [
-            pctx_tool(self._track_pctx_tool(fn), namespace=env.domain_name)
-            for fn in env_tools
+        pctx_tools = [
+            pctx_tool(self._track_pctx_tool(fn), namespace=self.domain) for fn in tools
         ]
-        self.pctx = Pctx(tools=pctx_env_tools)
+        self.pctx = Pctx(tools=pctx_tools)
         self.code_mode_fns = self._get_sync_code_mode_fns()
-        tau_tools = [as_tool(t) for t in self.code_mode_fns.values()]
-
-        super().__init__(tau_tools, env.get_policy(), llm, llm_args)
-
-    @property
-    def system_prompt(self) -> str:
-        """Override to add fs mode context."""
-        base_prompt = SYSTEM_PROMPT.format(
-            domain_policy=self.domain_policy, agent_instruction=AGENT_INSTRUCTION
-        )
-
-        if self.pctx_mode == "fs":
-            # Generate function list from env tools
-            env_tools = list(self.env.tools.tools.values()) if self.env.tools else []
-            function_list = "\n".join([f"- {fn.__name__}" for fn in env_tools])
-
-            fs_context = PCTX_FS_ADDENDUM.format(
-                namespace=self.env.domain_name, function_list=function_list
-            )
-            return base_prompt + "\n\n" + fs_context
-
-        return base_prompt
+        return [as_tool(t) for t in self.code_mode_fns.values()]
 
     def __del__(self):
         """Clean up the persistent event loop when the agent is deleted."""
         if hasattr(self, "_loop") and not self._loop.is_closed():
             self._loop.close()
+
+    @property
+    def system_prompt(self) -> str:
+        """Append fs mode context to the parent's system prompt when applicable."""
+        base_prompt = super().system_prompt
+
+        if self.pctx_mode == "fs":
+            function_list = "\n".join([f"- {fn.__name__}" for fn in self.tools])
+            fs_context = PCTX_FS_ADDENDUM.format(
+                namespace=self.domain, function_list=function_list
+            )
+            return base_prompt + "\n\n" + fs_context
+
+        return base_prompt
 
     def _track_pctx_tool(self, fn: Callable) -> Callable:
         """
@@ -119,7 +111,7 @@ class LLMPctxAgent(LLMAgent):
                 result = f"Error: {e}"
                 error = True
 
-            content = self.env.to_json_str(result)
+            content = Environment.to_json_str(result)
 
             logger.debug(
                 f"[PCTX] Env Response - {tool_call.name} (error={error})\n{content}"
@@ -302,3 +294,29 @@ class LLMPctxAgent(LLMAgent):
 
     def get_internal_messages(self) -> list[Message]:
         return self.internal_messages
+
+
+class LLMPctxAgent(LLMPctxMixin, LLMAgent):
+    def __init__(
+        self,
+        task: Task,
+        tools: list[Callable],
+        domain_policy: str,
+        llm: str | None = None,
+        llm_args: dict | None = None,
+    ):
+        tau_tools = self._init_pctx(task.user_scenario.instructions.domain, tools)
+        super().__init__(tau_tools, domain_policy, llm, llm_args)
+
+
+class LLMPctxSoloAgent(LLMPctxMixin, LLMSoloAgent):
+    def __init__(
+        self,
+        task: Task,
+        tools: list[Callable],
+        domain_policy: str,
+        llm: str | None = None,
+        llm_args: dict | None = None,
+    ):
+        tau_tools = self._init_pctx(task.user_scenario.instructions.domain, tools)
+        super().__init__(tau_tools, domain_policy, task, llm, llm_args)

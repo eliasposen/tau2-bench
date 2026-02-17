@@ -231,7 +231,7 @@ class TelecomTools(ToolKitBase):
         return [plan.plan_id for plan in self.db.plans]
 
     @is_tool(ToolType.READ)
-    def get_details_by_id(self, id: str) -> Dict[str, Any]:
+    def get_details_by_id(self, id: str) -> Line | Device | Bill | Customer | Plan:
         """
         Retrieves the details for a given ID.
         The ID must be a valid ID for a Customer, Line, Device, Bill, or Plan.
@@ -403,7 +403,7 @@ class TelecomTools(ToolKitBase):
                 bills.append(bill)
         return bills
 
-    def _set_bill_to_paid(self, bill_id: str) -> None:
+    def _set_bill_to_paid(self, bill_id: str) -> str:
         """
         Sets the bill to paid.
         """
@@ -537,7 +537,7 @@ class TelecomTools(ToolKitBase):
         return f"Data usage set to {data_used_gb} GB for line {line_id}"
 
     @is_tool(ToolType.WRITE)
-    def enable_roaming(self, customer_id: str, line_id: str) -> Dict[str, Any]:
+    def enable_roaming(self, customer_id: str, line_id: str) -> str:
         """
         Enables international roaming on a line.
 

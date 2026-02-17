@@ -8,7 +8,7 @@ from typing import Optional
 from loguru import logger
 
 from tau2.agent.llm_agent import LLMAgent, LLMGTAgent, LLMSoloAgent
-from tau2.agent.llm_pctx_agent import LLMPctxAgent
+from tau2.agent.llm_pctx_agent import LLMPctxAgent, LLMPctxSoloAgent
 from tau2.data_model.simulation import (
     AgentInfo,
     Info,
@@ -452,14 +452,28 @@ def run_task(
     AgentConstructor = registry.get_agent_constructor(agent)
 
     solo_mode = False
-    if issubclass(AgentConstructor, LLMPctxAgent):
+    if issubclass(AgentConstructor, (LLMPctxAgent, LLMPctxSoloAgent)):
         ## must be first because LLMPctxAgent currently inherits from LLMAgent
+        tools = list(environment.tools.tools.values()) if environment.tools else []
+        if issubclass(AgentConstructor, LLMPctxSoloAgent):
+            solo_mode = True
+            environment = environment_constructor(solo_mode=True)
+            user_tools = (
+                list(environment.user_tools.tools.values())
+                if environment.user_tools
+                else []
+            )
+            tools.extend(user_tools)
+
         agent = AgentConstructor(
-            env=environment,
+            task=task,
+            tools=tools,
+            domain_policy=environment.get_policy(),
             llm=llm_agent,
             llm_args=llm_args_agent,
         )
         agent.connect()
+
     elif issubclass(AgentConstructor, LLMAgent):
         agent = AgentConstructor(
             tools=environment.get_tools(),
