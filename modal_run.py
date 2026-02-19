@@ -42,10 +42,11 @@ image = (
 )
 def run_tau2_eval():
     """Run the tau2 evaluation benchmark."""
+    import json
     import os
-    import sys
     import subprocess
     import time
+    from pathlib import Path
 
     # Set environment variables
     os.environ["PCTX_MODE"] = "fs"
@@ -59,8 +60,24 @@ def run_tau2_eval():
     pctx_path = os.path.expanduser("~/.local/bin/pctx")
 
     # Start pctx server as a background process
+    config_path = Path("/root/tau2-bench/pctx.json")
+    config_path.write_text(
+        json.dumps(
+            {
+                "name": "pctx",
+                "version": "0.1.0",
+                "description": "",
+                "logger": {
+                    "enabled": True,
+                    "level": "warn",
+                    "format": "compact",
+                    "colors": False,
+                },
+            }
+        )
+    )
     pctx_process = subprocess.Popen(
-        [pctx_path, "start"],
+        [pctx_path, "start", "-c", str(config_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,  # Combine stderr with stdout
         text=True,
@@ -115,13 +132,13 @@ def run_tau2_eval():
                 "tau2",
                 "run",
                 "--domain",
-                "airline",
+                "telecom",
                 "--agent",
-                "llm_agent_pctx",
+                "llm_agent_pctx_solo",
                 "--agent-llm",
                 "openrouter/openai/gpt-5",
-                "--user-llm",
-                "openrouter/openai/gpt-4o-2024-05-13",
+                "--user",
+                "dummy_user",
                 "--log-level",
                 "INFO",
                 "--max-concurrency",

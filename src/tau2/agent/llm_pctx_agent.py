@@ -53,11 +53,11 @@ class LLMPctxMixin:
     Concrete subclasses must call self._init_pctx(env) before super().__init__().
     """
 
-    def _init_pctx(self, domain: str, tools: list[Callable] = None) -> list:
+    def _init_pctx(self, env: Environment, tools: list[Callable] = None) -> list:
         """Set up pctx state and return the tau_tools list to pass to super().__init__()."""
+        self.env = env
         self.internal_messages: list[Message] = []
         self.current_execute_callbacks: list[tuple[ToolCall, ToolMessage]] = []
-        self.domain = domain
         self.pctx_mode = os.environ.get("PCTX_MODE", "code").lower()
 
         # Create a persistent event loop for this agent instance
@@ -65,7 +65,8 @@ class LLMPctxMixin:
 
         # convert env tools to pctx tools for code-mode registration
         pctx_tools = [
-            pctx_tool(self._track_pctx_tool(fn), namespace=self.domain) for fn in tools
+            pctx_tool(self._track_pctx_tool(fn), namespace=self.env.domain_name)
+            for fn in tools
         ]
         self.pctx = Pctx(tools=pctx_tools)
         self.code_mode_fns = self._get_sync_code_mode_fns()
@@ -84,7 +85,7 @@ class LLMPctxMixin:
         if self.pctx_mode == "fs":
             function_list = "\n".join([f"- {fn.__name__}" for fn in self.tools])
             fs_context = PCTX_FS_ADDENDUM.format(
-                namespace=self.domain, function_list=function_list
+                namespace=self.env.domain_name, function_list=function_list
             )
             return base_prompt + "\n\n" + fs_context
 
@@ -102,48 +103,35 @@ class LLMPctxMixin:
             tool_call = ToolCall(id=tool_call_id, name=fn.__name__, arguments=kwargs)
 
             logger.debug(f"[PCTX] Env Call - {tool_call.name}\n{tool_call.arguments}")
+            tool_msg = self.env.get_response(tool_call)
 
-            result = None
-            error = False
-            try:
-                result = fn(**kwargs)
-            except Exception as e:
-                result = f"Error: {e}"
-                error = True
-
-            content = Environment.to_json_str(result)
+            tool_content = tool_msg.content
+            if tool_content is not None:
+                try:
+                    tool_content = json.loads(tool_content)
+                except json.decoder.JSONDecodeError:
+                    pass
 
             logger.debug(
-                f"[PCTX] Env Response - {tool_call.name} (error={error})\n{content}"
+                f"[PCTX] Env Response - {tool_call.name} (error={tool_msg.error})\n{tool_msg.content}"
             )
 
-            tool_msg = ToolMessage(
-                id=tool_call_id,
-                role="tool",
-                content=content,
-                error=error,
-            )
             self.current_execute_callbacks.append((tool_call, tool_msg))
 
-            return result
+            return tool_content
 
         return tracked
 
     def _handle_pctx_tool_call(self, tool_call: ToolCall) -> ToolMessage:
         error = False
-        logger.debug(
-            f"[PCTX] Call - {tool_call.name}\n{tool_call.arguments.get('functions', tool_call.arguments.get('code', tool_call.arguments))}"
-        )
+        logger.debug(f"[PCTX] Call - {tool_call.name}")
         try:
             resp = self.code_mode_fns[tool_call.name](**tool_call.arguments)
         except Exception as e:
             resp = f"Error: {e}"
             error = True
 
-        if tool_call.name == "pctx_execute":
-            logger.debug(f"[PCTX] Response - {tool_call.name} (error={error})\n{resp}")
-        else:
-            logger.debug(f"[PCTX] Response - {tool_call.name} (error={error})")
+        logger.debug(f"[PCTX] Response - {tool_call.name} (error={error})")
 
         return ToolMessage(
             id=tool_call.id,
@@ -153,11 +141,11 @@ class LLMPctxMixin:
             error=error,
         )
 
-    def _run_in_loop(self, coro: Coroutine):
+    def _run_in_loop(self, coroutine: Coroutine):
         """Run a coroutine in the agent's persistent event loop from sync code."""
         asyncio.set_event_loop(self._loop)
         try:
-            return self._loop.run_until_complete(coro)
+            return self._loop.run_until_complete(coroutine)
         finally:
             asyncio.set_event_loop(None)
 
@@ -240,8 +228,9 @@ class LLMPctxMixin:
         iteration = 0
         while msg.is_tool_call():
             iteration += 1
+            msg_content = "\n\tmessage content: " + msg.content if msg.content else ""
             logger.debug(
-                f"[PCTX] Tool call iteration {iteration}\n\ttool call(s): {len(msg.tool_calls)}\n\tmessage content: {msg.content}"
+                f"[PCTX] Internal messaging turn {iteration}\n\ttool call(s): {len(msg.tool_calls)}{msg_content}"
             )
 
             expanded_assistant_msg = deepcopy(msg)
@@ -299,24 +288,24 @@ class LLMPctxMixin:
 class LLMPctxAgent(LLMPctxMixin, LLMAgent):
     def __init__(
         self,
+        env: Environment,
         task: Task,
         tools: list[Callable],
-        domain_policy: str,
         llm: str | None = None,
         llm_args: dict | None = None,
     ):
-        tau_tools = self._init_pctx(task.user_scenario.instructions.domain, tools)
-        super().__init__(tau_tools, domain_policy, llm, llm_args)
+        tau_tools = self._init_pctx(env, tools)
+        super().__init__(tau_tools, env.get_policy(), llm, llm_args)
 
 
 class LLMPctxSoloAgent(LLMPctxMixin, LLMSoloAgent):
     def __init__(
         self,
+        env: Environment,
         task: Task,
         tools: list[Callable],
-        domain_policy: str,
         llm: str | None = None,
         llm_args: dict | None = None,
     ):
-        tau_tools = self._init_pctx(task.user_scenario.instructions.domain, tools)
-        super().__init__(tau_tools, domain_policy, task, llm, llm_args)
+        tau_tools = self._init_pctx(env, tools)
+        super().__init__(tau_tools, env.get_policy(), task, llm, llm_args)

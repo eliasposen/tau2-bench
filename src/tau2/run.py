@@ -466,9 +466,9 @@ def run_task(
             tools.extend(user_tools)
 
         agent = AgentConstructor(
+            env=environment,
             task=task,
             tools=tools,
-            domain_policy=environment.get_policy(),
             llm=llm_agent,
             llm_args=llm_args_agent,
         )
