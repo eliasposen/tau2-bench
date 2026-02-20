@@ -141,8 +141,6 @@ def run_tau2_eval():
                 "dummy_user",
                 "--log-level",
                 "INFO",
-                "--max-concurrency",
-                "1",
             ],
             check=False,  # Don't raise on error, we want to save results regardless
             capture_output=False,

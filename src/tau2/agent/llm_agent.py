@@ -461,7 +461,10 @@ class LLMSoloAgent(LocalAgent[LLMAgentState]):
             **self.llm_args,
         )
         if not assistant_message.is_tool_call():
-            raise ValueError("LLMSoloAgent only supports tool calls.")
+            assistant_message.content = (
+                f"{assistant_message.content}\n{self.STOP_TOKEN}"
+            )
+            # raise ValueError("LLMSoloAgent only supports tool calls.")
         message = self._check_if_stop_toolcall(assistant_message)
         state.messages.append(assistant_message)
         return assistant_message, state
