@@ -376,7 +376,8 @@ def run_tasks(
             _save(simulation)
         except Exception as e:
             logger.error(f"Error running task {task.id}, trial {trial}: {e}")
-            return None
+            raise e
+            # return None
         return simulation
 
     args = []

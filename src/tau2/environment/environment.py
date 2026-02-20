@@ -321,6 +321,7 @@ class Environment:
         for tool_call, expected_response in action_responses:
             if tool_call.name.startswith("pctx_"):
                 continue
+            tool_call.name = tool_call.name.split(".")[1]
             response = self.get_response(tool_call)
             try:
                 content = json.loads(response.content)

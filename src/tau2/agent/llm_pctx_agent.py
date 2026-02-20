@@ -70,7 +70,14 @@ class LLMPctxMixin:
         ]
         self.pctx = Pctx(tools=pctx_tools)
         self.code_mode_fns = self._get_sync_code_mode_fns()
-        return [as_tool(t) for t in self.code_mode_fns.values()]
+
+        tau_tools = [as_tool(t) for t in self.code_mode_fns.values()]
+        for t in tools:
+            tool = as_tool(t)
+            tool.name = f"{self.env.domain_name}.{tool.name}"
+            tau_tools.append(tool)
+
+        return tau_tools
 
     def __del__(self):
         """Clean up the persistent event loop when the agent is deleted."""
@@ -156,50 +163,93 @@ class LLMPctxMixin:
         - "code" (default): Traditional discovery workflow (list_functions, get_function_details, execute)
         - "fs": Filesystem exploration workflow (execute_bash, execute_typescript)
         """
-        mode = os.environ.get("PCTX_MODE", "code").lower()
 
-        if mode == "fs":
-            # Filesystem mode: bash exploration + typescript execution
-            def pctx_execute_bash(command: str) -> str:
-                return self._run_in_loop(self.pctx.execute_bash(command)).markdown()
+        def pctx_execute_typescript(code: str) -> str:
+            return self._run_in_loop(self.pctx.execute(code)).markdown()
 
-            pctx_execute_bash.__doc__ = PRESCRIPTIVE_DESCRIPTIONS["execute_bash"]
+        pctx_execute_typescript.__doc__ = """Execute TypeScript code with access to all available tools.
 
-            def pctx_execute_typescript(code: str) -> str:
-                return self._run_in_loop(self.pctx.execute(code)).markdown()
+CODE STRUCTURE:
+async function run() {
+    // Your code here
+    // Call `await invoke({ name: "tool_name", arguments: {...} })` with proper types
+    return result;
+}
 
-            pctx_execute_typescript.__doc__ = PRESCRIPTIVE_DESCRIPTIONS[
-                "execute_typescript"
-            ]
+IMPORTANT RULES:
+- ALWAYS make all tool calls via typescript unless otherwise explicitly stated in the tool definition.
+- `invoke` takes a single object as an argument with 2 properties:
+    - `name: string` - the name of the function/tool to be called, exactly as it is written in the function list.
+    - `arguments: {[key: string]: any}` - the arguments for the function as described by the json schema in the function/tool list
+- `invoke` will either return a native typescript object as defined by the successful return schema (in the function definition).
+    - if there is no return schema in the function definition then the return type of the function is `unknown`.
+- You can call any of the available tools using the `invoke` typescript function (does not need to be imported)
+- You MUST define a `run()` function
+- You MUST NOT call or export any functions from the root of the script, `run()` will be called automatically
+- ALWAYS batch multiple tool calls into ONE execute typescript call
+- Only listed tools are available to call via `invoke` - other common functions/modules like fetch(), fs, or other Node/Deno APIs are unavailable.
+- Variables don't persist between executions
+- Code runs in an isolated Deno sandbox
 
-            return {
-                "pctx_execute_bash": pctx_execute_bash,
-                "pctx_execute_typescript": pctx_execute_typescript,
-            }
-        else:
-            # Code mode (default): Traditional discovery workflow
-            def pctx_list_functions() -> str:
-                return self._run_in_loop(self.pctx.list_functions()).code
+TOKEN USAGE WARNING:
+- This tool could return LARGE responses if your code returns big objects
+- Filter/map/reduce data IN YOUR CODE before returning
+- Only return specific fields you need
+- Use console.log() for intermediate results
 
-            pctx_list_functions.__doc__ = PRESCRIPTIVE_DESCRIPTIONS["list_functions"]
+RETURN TYPE NOTE:
+- Function results are already parsed JavaScript objects, NOT JSON strings
+- Do NOT call JSON.parse() on results
+- Access properties directly (e.g., result.data)"""
 
-            def pctx_get_function_details(functions: list[str]) -> str:
-                return self._run_in_loop(self.pctx.get_function_details(functions)).code
+        return {
+            "pctx_execute_typescript": pctx_execute_typescript,
+        }
 
-            pctx_get_function_details.__doc__ = PRESCRIPTIVE_DESCRIPTIONS[
-                "get_function_details"
-            ]
+        # mode = os.environ.get("PCTX_MODE", "code").lower()
 
-            def pctx_execute(code: str) -> str:
-                return self._run_in_loop(self.pctx.execute(code)).markdown()
+        # if mode == "fs":
+        #     # Filesystem mode: bash exploration + typescript execution
+        #     def pctx_execute_bash(command: str) -> str:
+        #         return self._run_in_loop(self.pctx.execute_bash(command)).markdown()
 
-            pctx_execute.__doc__ = PRESCRIPTIVE_DESCRIPTIONS["execute"]
+        #     pctx_execute_bash.__doc__ = PRESCRIPTIVE_DESCRIPTIONS["execute_bash"]
 
-            return {
-                "pctx_list_functions": pctx_list_functions,
-                "pctx_get_function_details": pctx_get_function_details,
-                "pctx_execute": pctx_execute,
-            }
+        #     def pctx_execute_typescript(code: str) -> str:
+        #         return self._run_in_loop(self.pctx.execute(code)).markdown()
+
+        #     pctx_execute_typescript.__doc__ = PRESCRIPTIVE_DESCRIPTIONS[
+        #         "execute_typescript"
+        #     ]
+
+        #     return {
+        #         "pctx_execute_bash": pctx_execute_bash,
+        #         "pctx_execute_typescript": pctx_execute_typescript,
+        #     }
+        # else:
+        #     # Code mode (default): Traditional discovery workflow
+        #     def pctx_list_functions() -> str:
+        #         return self._run_in_loop(self.pctx.list_functions()).code
+
+        #     pctx_list_functions.__doc__ = PRESCRIPTIVE_DESCRIPTIONS["list_functions"]
+
+        #     def pctx_get_function_details(functions: list[str]) -> str:
+        #         return self._run_in_loop(self.pctx.get_function_details(functions)).code
+
+        #     pctx_get_function_details.__doc__ = PRESCRIPTIVE_DESCRIPTIONS[
+        #         "get_function_details"
+        #     ]
+
+        #     def pctx_execute(code: str) -> str:
+        #         return self._run_in_loop(self.pctx.execute(code)).markdown()
+
+        #     pctx_execute.__doc__ = PRESCRIPTIVE_DESCRIPTIONS["execute"]
+
+        #     return {
+        #         "pctx_list_functions": pctx_list_functions,
+        #         "pctx_get_function_details": pctx_get_function_details,
+        #         "pctx_execute": pctx_execute,
+        #     }
 
     def connect(self):
         try:
@@ -308,4 +358,5 @@ class LLMPctxSoloAgent(LLMPctxMixin, LLMSoloAgent):
         llm_args: dict | None = None,
     ):
         tau_tools = self._init_pctx(env, tools)
+        print(tau_tools)
         super().__init__(tau_tools, env.get_policy(), task, llm, llm_args)

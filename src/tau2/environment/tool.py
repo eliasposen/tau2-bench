@@ -144,11 +144,15 @@ class Tool(BaseTool):
     @property
     def openai_schema(self) -> dict:
         """Get the OpenAI schema of the tool."""
+        orig_return = self.returns.model_json_schema()
+        return_schema = orig_return["properties"]["returns"]
+        if orig_return.get("$defs") is not None:
+            return_schema["$defs"] = orig_return["$defs"]
         return {
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self._get_description(),
+                "description": f"{self._get_description()}\nThe successful return schema of this tool is:\n{return_schema}",
                 "parameters": self.params.model_json_schema(),
             },
         }
